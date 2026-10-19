@@ -1,0 +1,12 @@
+# 只提交源码与安装器
+*.bak
+*.log
+models.json
+node_modules/
+dist/
+deploy/
+.preview/
+*.tmp
+
+# 用户的本地路径备份
+backup/
