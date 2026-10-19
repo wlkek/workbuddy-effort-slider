@@ -69,17 +69,6 @@
 > 踩过的坑：Electron 会按 asar 头里记录的 `size` 返回入口文件内容，**超出的字节会被截断**。
 > 所以入口文件必须保持在原始字节数以内——安装器会删掉 HTML 注释和空行来腾空间。
 
-## 同类项目
-
-同一思路在 **DSH（DeepSeek Harness）** 生态里已有几个实现：
-
-- [HanaAyane/dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort) ★235
-- [Microqian2th/dsh-codex-effort-slider](https://github.com/Microqian2th/dsh-codex-effort-slider) ★168
-- [bakabaicai/DSH-Codex-reasoning-effort-slider](https://github.com/bakabaicai/DSH-Codex-reasoning-effort-slider)
-
-它们都是插件形态（DSH 有 UI 扩展点）；WorkBuddy 目前的插件体系只有 SKILL 和 MCP，
-没有 UI 扩展点，所以这里只能用"注入入口文件"的方式。
-
 ## 版本与提交记录
 
 **本项目从 v2.8.0 起开源**，仓库里只有这一条提交——因为开发期没有用 git，
