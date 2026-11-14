@@ -1,6 +1,21 @@
 # 变更记录
 
-开发过程是私有的，开源时直接落到 v2.8.0。下面这条线是真实走过的路，写出来是为了说明每个设计为什么长这样。
+## v3.0.0 — 复活（2026-11-14）
+
+5.9.2 起客户端把 renderer 打进 asar 并加了 SHA256 完整性校验，旧的 index.html 加载器方案
+没有落点。这一版换成运行时注入，**不再改客户端任何文件**。
+
+- **新通道**：`NODE_OPTIONS=--require hook.js`（Electron 的 `EnableNodeOptionsEnvironmentVariable` fuse，
+  5.9.3 实测为开）→ main 进程监听 `web-contents-created` → 主界面 `dom-ready` 后
+  `executeJavaScript(mod.js)`。
+- **hook 的三条约束**：只认 `process.type === 'browser'`；启动后立刻把 `--require` 从
+  `NODE_OPTIONS` 摘掉，避免被 agent 的 node 子进程继承；只注入
+  `app.asar/renderer/index.html`，guest 页面跳过。
+- **安装器重写**：不再碰安装目录，改为复制到 `%LOCALAPPDATA%\WbMods`、生成 `launch.vbs`、
+  建桌面/开始菜单快捷方式；安装前读 exe 的 fuse 串，通道不可用时明确提示。
+- **滑条逻辑没改**，面板识别仍然用结构锚点（思考模式开关 / 档位文案），语言无关。
+  5.9.2 新增的「自定义模型」入口是否带独立的档位面板，需要真机确认。
+- **已知代价**：必须用新快捷方式启动；`NODE_OPTIONS` 注入可能被杀软拦。
 
 ## v2.8.0
 - **下线「快速」手感**。它是步进式的（旋钮只停档位格），慢拖时"先停住再整段跳"，

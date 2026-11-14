@@ -1,57 +1,110 @@
 ﻿param(
   [string]$AppRoot,
   [switch]$Uninstall,
-  [switch]$Status,
-  [switch]$Quiet
+  [switch]$Status
 )
 
-# WorkBuddy 思考强度滑条 —— 安装 / 卸载
-# 只做三件事：备份入口文件 -> 生成带加载器的入口 -> 复制脚本
-# 卸载 = 用备份还原，不留残留。
+# WorkBuddy 思考强度滑条 —— 安装 / 卸载（5.9.2+ 新版通道）
+# ------------------------------------------------------------------
+# 不再改客户端任何文件。做法：
+#   1. 把 loader 与 mod 复制到 %LOCALAPPDATA%\WbMods
+#   2. 生成 launch.vbs（设置 NODE_OPTIONS=--require hook.js 后启动 WorkBuddy.exe）
+#   3. 在桌面 / 开始菜单建快捷方式指向 launch.vbs
+# 卸载只删自己这一份，不影响其它 mod。
 
 $ErrorActionPreference = 'Stop'
-$here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$enc  = New-Object System.Text.UTF8Encoding($false)
+$ModId   = 'effort-slider'
+$ModName = '思考强度滑条'
+$here    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$dest    = Join-Path $env:LOCALAPPDATA 'WbMods'
+$launch  = Join-Path $dest 'launch.vbs'
+$shortcutName = 'WorkBuddy (mods).lnk'
 
-function Say($msg, $color = 'Gray') { if (-not $Quiet) { Write-Host $msg -ForegroundColor $color } }
+function Say($msg, $color = 'Gray') { Write-Host $msg -ForegroundColor $color }
 
-function Read-Utf8($p) { $enc.GetString([IO.File]::ReadAllBytes($p)) }
-
-# ---------------------------------------------------------------- 定位安装目录
-if (-not $AppRoot) {
-  $candidates = @()
-  $proc = Get-Process -Name 'WorkBuddy' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($proc -and $proc.Path) { $candidates += (Split-Path -Parent $proc.Path) }
-  $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy')
-  $candidates += (Join-Path $env:ProgramFiles 'WorkBuddy')
-  $candidates += 'D:\应用\wookbuddy\WorkBuddy'
-  foreach ($c in $candidates) {
-    if ($c -and (Test-Path (Join-Path $c 'resources\app.asar'))) { $AppRoot = $c; break }
+function Find-AppRoot {
+  $cands = @()
+  Get-Process -Name 'WorkBuddy' -ErrorAction SilentlyContinue |
+    ForEach-Object { if ($_.Path) { $cands += (Split-Path -Parent $_.Path) } }
+  if ($env:LOCALAPPDATA) { $cands += (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy') }
+  if ($env:ProgramFiles)  { $cands += (Join-Path $env:ProgramFiles 'WorkBuddy') }
+  if (${env:ProgramFiles(x86)}) { $cands += (Join-Path ${env:ProgramFiles(x86)} 'WorkBuddy') }
+  $keys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  foreach ($k in $keys) {
+    Get-ItemProperty $k -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -like '*WorkBuddy*' -and $_.InstallLocation } |
+      ForEach-Object { $cands += $_.InstallLocation }
   }
+  foreach ($c in $cands) {
+    if ($c -and (Test-Path (Join-Path $c 'resources\app.asar'))) { return $c }
+  }
+  return $null
 }
-if (-not $AppRoot) { throw '找不到 WorkBuddy 安装目录，请用 -AppRoot 指定' }
 
-$html   = Join-Path $AppRoot 'resources\app.asar.unpacked\renderer\index.html'
-$bak    = "$html.wb-es.bak"
-$dstDir = Join-Path $AppRoot 'resources\wb-effort-slider'
-$dst    = Join-Path $dstDir 'wb-effort-slider.js'
-$src    = Join-Path $here 'src\wb-effort-slider.js'
-$build  = Join-Path $here 'tools\build-entry.ps1'
+# 读 exe 里的 Electron fuse 串（sentinel + version + len + '0'/'1'）
+function Get-FuseString([string]$exe) {
+  $marker = 'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
+  $enc = [Text.Encoding]::GetEncoding(28591)
+  $fs = [IO.File]::OpenRead($exe)
+  try {
+    $size = 8MB
+    $overlap = 64
+    $buf = New-Object byte[] $size
+    $carry = ''
+    while (($n = $fs.Read($buf, 0, $size)) -gt 0) {
+      $s = $carry + $enc.GetString($buf, 0, $n)
+      $i = $s.IndexOf($marker, [StringComparison]::Ordinal)
+      if ($i -ge 0) {
+        $p = $i + $marker.Length
+        if ($s.Length -lt $p + 2) { return '' }
+        $len = [int][char]$s[$p + 1]
+        if ($s.Length -lt $p + 2 + $len) { return '' }
+        return $s.Substring($p + 2, $len)
+      }
+      $carry = $s.Substring([Math]::Max(0, $s.Length - $overlap))
+    }
+  } finally { $fs.Dispose() }
+  return $null
+}
 
-if (-not (Test-Path $html)) { throw "找不到入口文件：$html（用 -AppRoot 指定安装目录）" }
+# ---------------------------------------------------------------- 定位
+if (-not $AppRoot) { $AppRoot = Find-AppRoot }
+if (-not $AppRoot) {
+  Say '找不到 WorkBuddy 安装目录。请用 -AppRoot "D:\你的\WorkBuddy" 指定。' 'Red'
+  exit 1
+}
+$exe = Join-Path $AppRoot 'WorkBuddy.exe'
+if (-not (Test-Path $exe)) {
+  Say "目录里没有 WorkBuddy.exe：$AppRoot" 'Red'
+  exit 1
+}
 
 # ---------------------------------------------------------------- 状态
 if ($Status) {
-  $patched = (Read-Utf8 $html).Contains('wb-effort-slider/wb-effort-slider.js')
   Say ''
-  Say ('  安装目录   : ' + $AppRoot)
-  Say ('  index.html : ' + $(if ($patched) { '已注入' } else { '未注入' }))
-  Say ('  备份       : ' + $(if (Test-Path $bak) { '有（index.html.wb-es.bak）' } else { '无' }))
-  if (Test-Path $dst) {
-    $ver = ([regex]::Match((Read-Utf8 $dst), "VERSION = '([0-9.]+)'")).Groups[1].Value
-    Say ('  注入脚本   : v' + $ver + '  ' + $dst)
-  } else {
-    Say '  注入脚本   : 未安装'
+  Say "  安装目录 : $AppRoot"
+  Say "  Mod 目录 : $dest"
+  if (Test-Path (Join-Path $dest 'mods')) {
+    Get-ChildItem (Join-Path $dest 'mods') -Directory | ForEach-Object {
+      $mf = Join-Path $_.FullName 'manifest.json'
+      $v = ''
+      if (Test-Path $mf) {
+        try { $v = (Get-Content $mf -Raw | ConvertFrom-Json).version } catch { }
+      }
+      Say ("  Mod      : " + $_.Name + " v" + $v)
+    }
+  } else { Say '  Mod      : 未安装' }
+  Say ('  快捷方式 : ' + $(if (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) $shortcutName)) { '已创建' } else { '缺失' }))
+  $fuseStr = Get-FuseString $exe
+  if ($fuseStr) { Say ('  Fuse     : ' + $fuseStr + $(if ($fuseStr.Length -gt 2 -and $fuseStr[2] -eq '1') { '（NODE_OPTIONS 可用）' } else { '（NODE_OPTIONS 已被关闭，注入不可用）' })) }
+  $log = Join-Path $dest 'loader.log'
+  if (Test-Path $log) {
+    Say '  最近日志 :'
+    Get-Content $log -Tail 6 | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
   }
   Say ''
   exit 0
@@ -59,44 +112,87 @@ if ($Status) {
 
 # ---------------------------------------------------------------- 卸载
 if ($Uninstall) {
-  if (Test-Path $bak) {
-    Copy-Item $bak $html -Force
-    Say '[OK] 已用备份还原 index.html' 'Green'
-  } else {
-    Say '[WARN] 没有备份，无法自动还原' 'Yellow'
+  $mine = Join-Path $dest ('mods\' + $ModId)
+  if (Test-Path $mine) { Remove-Item $mine -Recurse -Force; Say "[OK] 已删除 $ModName" 'Green' }
+  else { Say '[--] 没有安装记录' 'Yellow' }
+
+  $others = @()
+  if (Test-Path (Join-Path $dest 'mods')) {
+    $others = @(Get-ChildItem (Join-Path $dest 'mods') -Directory)
   }
-  if (Test-Path $dstDir) { Remove-Item $dstDir -Recurse -Force }
-  Say '[OK] 已删除注入脚本目录'
-  Say '     完全退出 WorkBuddy 再打开即可恢复原样'
+  if ($others.Count -eq 0) {
+    foreach ($p in @([Environment]::GetFolderPath('Desktop'),
+                     (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))) {
+      $lnk = Join-Path $p $shortcutName
+      if (Test-Path $lnk) { Remove-Item $lnk -Force; Say "[OK] 已删除快捷方式：$lnk" 'Green' }
+    }
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    Say '     已清理干净，用原图标启动即为官方版本' 'Gray'
+  } else {
+    Say '     还有其它 mod 在用 loader，快捷方式保留' 'Gray'
+  }
   exit 0
 }
 
 # ---------------------------------------------------------------- 安装
-if (-not (Test-Path $src)) { throw "找不到脚本：$src" }
-
-$cur = Read-Utf8 $html
-if (-not $cur.Contains('wb-effort-slider/wb-effort-slider.js')) {
-  # 当前是干净的原版（首次安装，或客户端刚更新过）-> 刷新备份
-  Copy-Item $html $bak -Force
-  Say '[OK] 已备份 index.html -> index.html.wb-es.bak' 'Green'
-} elseif (-not (Test-Path $bak)) {
-  throw '入口已被改过但没有备份，请先手动还原 index.html 再安装'
+$fuseStr = Get-FuseString $exe
+if ($fuseStr -eq $null) {
+  Say '[!] 读不到 Electron fuse，无法确认注入通道是否可用，仍继续安装' 'Yellow'
+} elseif ($fuseStr.Length -le 2 -or $fuseStr[2] -ne '1') {
+  Say '[!] 这个版本的 WorkBuddy 关闭了 NODE_OPTIONS fuse（' + $fuseStr + '），本 mod 无法生效。' 'Yellow'
+  Say '    可以继续安装，但客户端启动后不会有任何变化。' 'Yellow'
+} else {
+  Say ('[OK] 注入通道可用（fuse ' + $fuseStr + '）') 'Green'
 }
 
-$tmp = Join-Path $env:TEMP ('wb-es-entry-' + [guid]::NewGuid().ToString('N') + '.html')
-& $build -Source $bak -Dest $tmp | Out-Null
-Copy-Item $tmp $html -Force
-Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+$modDir = Join-Path $dest ('mods\' + $ModId)
+New-Item -ItemType Directory -Force -Path $modDir | Out-Null
+Copy-Item (Join-Path $here 'loader\hook.js') (Join-Path $dest 'hook.js') -Force
+Copy-Item (Join-Path $here ('src\wb-' + $ModId + '.js')) (Join-Path $modDir 'mod.js') -Force
 
-New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-Copy-Item $src $dst -Force
+$manifest = @{
+  name        = $ModName
+  version     = (Get-Content (Join-Path $here 'VERSION') -Raw).Trim()
+  description = '把思考强度列表换成连续滑条'
+  main        = 'mod.js'
+} | ConvertTo-Json -Depth 4
+[IO.File]::WriteAllText((Join-Path $modDir 'manifest.json'), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
-$check = Read-Utf8 $html
-if (-not $check.Contains('wb-effort-slider/wb-effort-slider.js')) { throw '写入后校验失败' }
-if (-not (Test-Path $dst)) { throw '写入后校验失败：脚本没复制成功' }
+# launch.vbs：无窗口，设置环境变量后拉起客户端
+$vbs = @"
+Option Explicit
+Dim sh, hook
+Set sh = CreateObject("WScript.Shell")
+hook = "$(Join-Path $dest 'hook.js')"
+sh.Environment("PROCESS")("NODE_OPTIONS") = "--require """ & hook & """"
+sh.Run """$exe""", 1, False
+"@
+[IO.File]::WriteAllText($launch, $vbs, [Text.Encoding]::Unicode)
+
+# 快捷方式
+$wsh = New-Object -ComObject WScript.Shell
+$targets = @(
+  [Environment]::GetFolderPath('Desktop'),
+  (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+)
+foreach ($dir in $targets) {
+  if (-not (Test-Path $dir)) { continue }
+  $lnkPath = Join-Path $dir $shortcutName
+  $sc = $wsh.CreateShortcut($lnkPath)
+  $sc.TargetPath = (Join-Path $env:SystemRoot 'System32\wscript.exe')
+  $sc.Arguments = '"' + $launch + '"'
+  $sc.WorkingDirectory = $AppRoot
+  $sc.IconLocation = $exe + ',0'
+  $sc.Description = 'WorkBuddy（已加载 mod）'
+  $sc.Save()
+  Say "[OK] 快捷方式：$lnkPath" 'Green'
+}
 
 Say ''
 Say '[OK] 安装完成' 'Green'
-Say '     请**完全退出 WorkBuddy 再重新打开**（托盘退出，只关窗口不够）'
-Say '     入口：输入框的模型按钮 -> 悬停某个模型 -> 悬停「思考强度」'
-Say '     右键滑条可调设置；卸载用  .\install.cmd -Uninstall'
+Say '     1. 托盘右键，完全退出 WorkBuddy'
+Say '     2. 用「WorkBuddy (mods)」快捷方式启动'
+Say '     3. 打开模型菜单看图标是否生效'
+Say ''
+Say '     排查：%LOCALAPPDATA%\WbMods\loader.log' 'DarkGray'
+Say '     回滚：双击 uninstall.cmd' 'DarkGray'
