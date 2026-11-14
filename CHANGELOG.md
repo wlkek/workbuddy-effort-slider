@@ -1,5 +1,26 @@
 # 变更记录
 
+## v3.0.2 — 跨机器 / 跨目录自动识别（2026-11-14）
+
+之前能装能用，但只在「客户端正在运行」时可靠——注册表里的 `InstallLocation`
+是空的，只读它会在冷启动安装时找不到目录。
+
+- **路径探测重写为六条独立线索**：上次记录 → 运行进程 → 注册表
+  `DisplayIcon` / `InstallLocation` / `UninstallString` → App Paths →
+  快捷方式（按目标或图标指向 `WorkBuddy.exe` 判定，不靠文件名）→ 默认路径。
+  判定标准统一为 `resources\app.asar` 存在，所以装到任何盘、任何目录名都能认。
+- **快捷方式改指固定入口** `%LOCALAPPDATA%\WbMods\node.exe`（客户端自带 node 的硬链接）。
+  之前直接指向 `versions\<版本号>\node.exe`，客户端升级清掉旧版本目录后，
+  图标会连客户端都打不开。实测硬链接在源文件删除后仍可执行。
+- **config.json 增加 candidates**：注入器在 `app` 失效时逐个回退。
+  实测把 `app` 改成不存在的盘符，仍能从候选找回客户端。
+- **修复**：配置里残留失效路径（移走的盘符）会让 `Join-Path` 抛错、整个安装中断。
+  现在候选入表前先 `Test-Path`。
+- **修复**：`-Status` 里 mod 版本号显示为空。PS 5.1 默认按 GBK 读无 BOM 的 UTF-8，
+  中文描述被吃掉一个引号导致 JSON 解析失败——所有 `Get-Content` 补 `-Encoding UTF8`。
+- `install.cmd` 先对解压目录 `Unblock-File`，避免 zip 带 Mark-of-the-Web 时被拦。
+- 新增 `WB_DRY_RUN=1`：只打印解析到的客户端路径与 mod 列表，不启动客户端。
+
 ## v3.0.1 — 接管官方快捷方式（2026-11-14）
 
 - 安装器会把桌面 / 开始菜单 / 任务栏固定项里的 `WorkBuddy.lnk` 改成走注入器，

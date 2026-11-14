@@ -26,7 +26,25 @@ const ROOT = path.join(__dirname, 'mods');
 const LOG = path.join(process.env.LOCALAPPDATA || __dirname, 'WbMods', 'loader.log');
 let CFG = {};
 try { CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch (e) { /* ignore */ }
-const APP = process.env.WB_APP_EXE || CFG.app || '';
+
+/* 客户端位置：环境变量 > 上次成功的路径 > 安装时探测到的全部候选。
+ * 安装器会把每个能命中 resources\app.asar 的目录都写进 candidates，
+ * 所以客户端换了盘符或目录，这里仍能自己找回去，不必重装。 */
+function resolveApp() {
+  const tries = [];
+  if (process.env.WB_APP_EXE) tries.push(process.env.WB_APP_EXE);
+  if (CFG.app) tries.push(CFG.app);
+  if (Array.isArray(CFG.candidates)) {
+    for (const p of CFG.candidates) tries.push(p);
+  }
+  for (const p of tries) {
+    try {
+      if (p && fs.existsSync(p)) return p;
+    } catch (e) { /* ignore */ }
+  }
+  return '';
+}
+const APP = resolveApp();
 
 function log() {
   try {
@@ -136,12 +154,26 @@ function buildBootstrap(modsRoot, logPath) {
 }
 
 async function main() {
-  if (!APP || !fs.existsSync(APP)) {
-    log('app exe missing:', APP);
+  if (!APP) {
+    log('app exe not found; tried config.app=' + (CFG.app || '-') +
+        ' and ' + (Array.isArray(CFG.candidates) ? CFG.candidates.length : 0) + ' candidates');
+    log('client may have moved; re-run install.cmd to refresh paths');
     return;
   }
   if (!fs.existsSync(ROOT)) {
     log('no mods dir:', ROOT);
+    return;
+  }
+
+  /* WB_DRY_RUN=1 只打印解析结果，不启动客户端——排查「为什么没注入」时用 */
+  if (process.env.WB_DRY_RUN === '1') {
+    let modIds = [];
+    try {
+      modIds = fs.readdirSync(ROOT).filter(function (id) {
+        return fs.existsSync(path.join(ROOT, id, 'manifest.json'));
+      });
+    } catch (e) { /* ignore */ }
+    log('dry-run app=' + APP + ' mods=[' + modIds.join(',') + ']');
     return;
   }
 

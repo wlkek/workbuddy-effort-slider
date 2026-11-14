@@ -76,10 +76,55 @@
 
 ## 兼容性
 
+### 系统
+
+| 环境 | 状态 |
+|---|---|
+| Windows 11 x64 | ✅ 已验证（5.9.3） |
+| Windows 10 x64 | ✅ 支持，只用 PowerShell 5.1 内置能力，不需要装任何东西 |
+| 32 位系统 | ❌ 客户端本身没有 32 位版本 |
+| macOS / Linux | ❌ 客户端只有 Windows 版 |
+
+管理员安装（装在 `Program Files`）也能用：安装器把文件写到当前用户的
+`%LOCALAPPDATA%`，不需要管理员权限。公共桌面那个快捷方式没有权限时会跳过，
+不影响其它图标。
+
+### 安装目录
+
+**任意盘、任意路径、含中文或空格都行**，不要求叫 `WorkBuddy`。
+
+安装器不猜目录名，它按六条独立线索找，只要目录里存在 `resources\app.asar`
+就认——这是客户端独有的特征文件：
+
+| 顺序 | 线索 | 说明 |
+|---|---|---|
+| 1 | `config.json` | 上次装成功时记下的路径，最快的路径 |
+| 2 | 运行中的进程 | `Get-Process WorkBuddy` 的 `Path` |
+| 3 | 注册表卸载项 | `DisplayIcon` / `InstallLocation` / `UninstallString`。**安装器常常只填 DisplayIcon**，所以只读 `InstallLocation` 会漏 |
+| 4 | App Paths | `HKLM` / `HKCU` 两处，含 WOW6432Node |
+| 5 | 快捷方式 | 桌面、公共桌面、开始菜单（递归）、任务栏固定项。**按目标或图标指向 `WorkBuddy.exe` 判定**，不靠文件名 |
+| 6 | 默认路径 | `%LOCALAPPDATA%\Programs`、`Program Files`、`Program Files (x86)` |
+
+全部落空时会明确报错，并给出 `install.cmd -AppRoot "D:\你的\WorkBuddy"` 的手动指定方式。
+
+### 客户端被移动 / 重装到别处
+
+- **快捷方式不会失效**：它指向 `%LOCALAPPDATA%\WbMods\node.exe`，这是一个指向
+  客户端自带运行时的硬链接（NTFS 下不额外占空间）。实测**删除源文件后硬链接仍可执行**，
+  所以客户端升级换掉 `versions\<版本号>\` 目录，图标照样能打开。
+- **注入器会自愈**：`config.json` 里存了安装时探测到的全部候选路径，
+  `app` 失效时按候选逐个试。实测把 `app` 改成不存在的盘符，仍能从候选找回。
+
+### 客户端版本与 DOM
+
 - v2.x 对应 5.8.3，v3 对应 **5.9.2 / 5.9.3**（已在 5.9.3 实测）
 - 依赖官方 DOM 类名（`.cr-model-selector__sub-panel*`、`__item--active`），官方改版可能失效
 - 面板识别用结构锚点（思考模式开关 + 档位文案），语言无关；5.9.2 新增的「自定义模型」入口若带独立档位面板，滑条可能不出现
 - 失效表现：滑条不出现，官方列表照常工作（fail-open）
+
+> [!WARNING]
+> 唯一的硬性前提：**包管理器装、绿色解压版**这类没有注册表项、没有开始菜单快捷方式、
+> 也没有自带 node 运行时的分发形式，自动识别会落空。这种情况用 `-AppRoot` 指定一次即可。
 
 ## 排查
 
@@ -98,6 +143,17 @@ main inspector closed
 | 日志没有新增 | 快捷方式没被接管（装的时候用了 `-KeepOfficialIcon`，或系统重建过图标）→ 重跑一次 `install.cmd` |
 | 有 `spawn app` 没有 `bootstrap ok` | 客户端已经在跑（单实例锁），先完全退出 |
 | 有 `bootstrap ok` 没有 `injected` | 页面 URL 不匹配，客户端改版了 |
+| 日志里 `app exe not found` | 客户端被移动过，候选也全失效了 → 重跑 `install.cmd` 刷新路径 |
+
+想确认注入器能不能找到客户端、有没有读到 mod，不必启动客户端，用 dry-run：
+
+```powershell
+$env:WB_DRY_RUN=1
+& "$env:LOCALAPPDATA\WbMods\node.exe" "$env:LOCALAPPDATA\WbMods\injector.js"
+```
+
+日志里会多一行 `dry-run app=<实际用到的客户端路径> mods=[...]`。
+装好后如果这行没有，说明是快捷方式的问题，不是注入的问题。
 
 > 任务栏固定项如果点了还是原版：右键取消固定，再从开始菜单把 WorkBuddy 固定回去
 > （开始菜单那个已经被接管了）。Windows 有时会缓存旧的固定项。
