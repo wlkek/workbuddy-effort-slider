@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>验证：滑条拉到最右，点击落到哪一项</title>
+<style>
+  body { background:#1b1d23; color:#cfd3dc; font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; padding:20px; }
+  h2 { font-size:13px; color:#8b93a7; margin:22px 0 8px; font-weight:600; }
+  .cr-model-selector__sub-panel { width:360px; background:#22252d; border:1px solid #33384a; border-radius:10px; padding:8px; }
+  .cr-model-selector__sub-panel-toggle { display:flex; align-items:center; justify-content:space-between; padding:6px 8px; }
+  .cr-model-selector__sub-panel-toggle button { background:#2f3542; color:#cfd3dc; border:1px solid #3d4557; border-radius:6px; padding:2px 8px; }
+  .cr-model-selector__sub-panel-section-label { font-size:11px; color:#7c8398; padding:6px 8px 2px; }
+  .cr-model-selector__sub-panel-item { padding:7px 10px; border-radius:6px; cursor:pointer; }
+  .cr-model-selector__sub-panel-item--active { background:#2f3a52; }
+  #result { margin-top:26px; padding:12px; background:#111318; border:1px solid #2a2f3d; border-radius:8px; white-space:pre-wrap; font-family:ui-monospace,Consolas,monospace; color:#8ee6a8; }
+</style>
+</head>
+<body>
+
+<h2>用例 A：3 档（模拟 thinkingLevelMap 只支持 low/medium/high）</h2>
+<div class="cr-model-selector__sub-panel" data-case="A3">
+  <div class="cr-model-selector__sub-panel-toggle"><button>开启</button><span>已开启</span></div>
+  <div class="cr-model-selector__sub-panel-section-label">思考强度</div>
+  <div class="cr-model-selector__sub-panel-item">低</div>
+  <div class="cr-model-selector__sub-panel-item cr-model-selector__sub-panel-item--active">中</div>
+  <div class="cr-model-selector__sub-panel-item">高</div>
+</div>
+
+<h2>用例 B：4 档（low/medium/high/xhigh）</h2>
+<div class="cr-model-selector__sub-panel" data-case="B4">
+  <div class="cr-model-selector__sub-panel-toggle"><button>开启</button><span>已开启</span></div>
+  <div class="cr-model-selector__sub-panel-section-label">思考强度</div>
+  <div class="cr-model-selector__sub-panel-item cr-model-selector__sub-panel-item--active">低</div>
+  <div class="cr-model-selector__sub-panel-item">中</div>
+  <div class="cr-model-selector__sub-panel-item">高</div>
+  <div class="cr-model-selector__sub-panel-item">超高</div>
+</div>
+
+<h2>用例 C：6 档（minimal → max 全支持）</h2>
+<div class="cr-model-selector__sub-panel" data-case="C6">
+  <div class="cr-model-selector__sub-panel-toggle"><button>开启</button><span>已开启</span></div>
+  <div class="cr-model-selector__sub-panel-section-label">思考强度</div>
+  <div class="cr-model-selector__sub-panel-item">最低</div>
+  <div class="cr-model-selector__sub-panel-item cr-model-selector__sub-panel-item--active">低</div>
+  <div class="cr-model-selector__sub-panel-item">中</div>
+  <div class="cr-model-selector__sub-panel-item">高</div>
+  <div class="cr-model-selector__sub-panel-item">超高</div>
+  <div class="cr-model-selector__sub-panel-item">极致</div>
+</div>
+
+<div id="result">等待测试…</div>
+
+<script src="../src/wb-effort-slider.js"></script>
+<script>
+(function () {
+  var clicks = [];
+
+  // 记录所有落到官方列表项上的点击（capture 阶段，先于 mod 的判断）
+  document.addEventListener('click', function (e) {
+    var it = e.target && e.target.closest ? e.target.closest('.cr-model-selector__sub-panel-item') : null;
+    if (!it) return;
+    var panel = it.closest('.cr-model-selector__sub-panel');
+    clicks.push((panel.dataset.case || '?') + ':' + it.textContent.trim());
+  }, true);
+
+  function fire(el, type, x) {
+    var ev;
+    try {
+      ev = new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: x, clientY: el.getBoundingClientRect().top + 15,
+        pointerId: 1, pointerType: 'mouse', button: 0, buttons: type === 'pointerup' ? 0 : 1, isPrimary: true
+      });
+    } catch (err) {
+      ev = new MouseEvent(type.replace('pointer', 'mouse'), { bubbles: true, cancelable: true, clientX: x });
+    }
+    el.dispatchEvent(ev);
+  }
+
+  function slideToEnd(panel) {
+    var track = panel.querySelector('.wb-es-track');
+    if (!track) return 'no-track';
+    var r = track.getBoundingClientRect();
+    var x = r.right - 1;
+    fire(track, 'pointerdown', x);
+    fire(window, 'pointermove', x);
+    fire(window, 'pointerup', x);
+    return 'ok';
+  }
+
+  setTimeout(function () {
+    var out = [];
+    var panels = document.querySelectorAll('.cr-model-selector__sub-panel');
+    for (var i = 0; i < panels.length; i++) {
+      var p = panels[i];
+      var items = p.querySelectorAll('.cr-model-selector__sub-panel-item');
+      var hasTrack = !!p.querySelector('.wb-es-track');
+      out.push(p.dataset.case + ' 挂载=' + (hasTrack ? 'Y' : 'N') + ' 档位数=' + items.length);
+      slideToEnd(p);
+    }
+
+    setTimeout(function () {
+      var tail = clicks.length ? clicks.join(', ') : '(没有任何点击)';
+      var lines = out.concat(['点击落点: ' + tail, 'clicks=' + clicks.length]);
+      document.getElementById('result').textContent = lines.join('\n');
+    }, 700);
+  }, 500);
+})();
+</script>
+</body>
+</html>
