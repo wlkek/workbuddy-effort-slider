@@ -1,7 +1,8 @@
 ﻿param(
   [string]$AppRoot,
   [switch]$Uninstall,
-  [switch]$Status
+  [switch]$Status,
+  [switch]$KeepOfficialIcon
 )
 
 # WorkBuddy 思考强度滑条 —— 安装 / 卸载（5.9.2+ 新版通道）
@@ -19,6 +20,14 @@ $here    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dest    = Join-Path $env:LOCALAPPDATA 'WbMods'
 $launch  = Join-Path $dest 'launch.vbs'
 $shortcutName = 'WorkBuddy (mods).lnk'
+
+# 官方用来启动客户端的快捷方式：接管它们，点原来的图标也能带 mod
+$officialLnks = @(
+  (Join-Path ([Environment]::GetFolderPath('Desktop')) 'WorkBuddy.lnk'),
+  (Join-Path $env:PUBLIC 'Desktop\WorkBuddy.lnk'),
+  (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\WorkBuddy.lnk'),
+  (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\WorkBuddy.lnk')
+)
 
 function Say($msg, $color = 'Gray') { Write-Host $msg -ForegroundColor $color }
 
@@ -121,6 +130,15 @@ if ($Uninstall) {
     $others = @(Get-ChildItem (Join-Path $dest 'mods') -Directory)
   }
   if ($others.Count -eq 0) {
+    # 没有其它 mod 了，把被接管的官方快捷方式还原
+    foreach ($lnk in $officialLnks) {
+      $bak = $lnk + '.wbmods.bak'
+      if (Test-Path $bak) {
+        Copy-Item $bak $lnk -Force
+        Remove-Item $bak -Force
+        Say "[OK] 已还原：$lnk" 'Green'
+      }
+    }
     foreach ($p in @([Environment]::GetFolderPath('Desktop'),
                      (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))) {
       $lnk = Join-Path $p $shortcutName
@@ -197,6 +215,25 @@ foreach ($dir in $targets) {
   $sc.Description = 'WorkBuddy（已加载 mod）'
   $sc.Save()
   Say "[OK] 快捷方式：$lnkPath" 'Green'
+}
+
+# 接管官方快捷方式：点原来那个图标也走注入器（原文件备份为 .wbmods.bak）
+if ($nodeExe -and -not $KeepOfficialIcon) {
+  foreach ($lnk in $officialLnks) {
+    if (-not (Test-Path $lnk)) { continue }
+    $bak = $lnk + '.wbmods.bak'
+    if (-not (Test-Path $bak)) { Copy-Item $lnk $bak -Force }
+    $sc = $wsh.CreateShortcut($lnk)
+    $sc.TargetPath = $nodeExe.FullName
+    $sc.Arguments = '"' + $injector + '"'
+    $sc.WorkingDirectory = $AppRoot
+    $sc.IconLocation = $exe + ',0'
+    $sc.WindowStyle = 7
+    $sc.Save()
+    Say "[OK] 已接管官方图标：$lnk" 'Green'
+  }
+} elseif ($KeepOfficialIcon) {
+  Say '[--] 按 -KeepOfficialIcon 要求，保留官方图标' 'DarkGray'
 }
 
 Say ''

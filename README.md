@@ -33,14 +33,18 @@
 1. 下载 Release 里的 zip，解压到任意目录
 2. 双击 `install.cmd`
 3. **托盘右键，完全退出 WorkBuddy**
-4. 用桌面上的 **「WorkBuddy (mods)」** 快捷方式启动
+4. 用你平时那个 WorkBuddy 图标启动（桌面 / 开始菜单 / 任务栏都行）
 5. 点开模型菜单 → 悬停某个模型 → 悬停「思考强度」
 
-> [!WARNING]
-> **必须用「WorkBuddy (mods)」启动。** 原来的图标、任务栏固定项启动的是官方原版，
-> 不会有任何变化。
+> [!NOTE]
+> 安装器会**接管**桌面、开始菜单、任务栏固定项里的 `WorkBuddy.lnk`：
+> 原文件备份成 `WorkBuddy.lnk.wbmods.bak`，快捷方式的名字和图标不变，
+> 只是背后多跑一个注入器。所以不用记新图标。
+>
+> 不想被接管就加 `-KeepOfficialIcon`，那样只能从新出现的
+> 「WorkBuddy (mods)」启动。
 
-`install.cmd -Status` 看状态，`uninstall.cmd` 一键还原。启动时可能闪过一个最小化的窗口，那是注入器。
+`install.cmd -Status` 看状态，`uninstall.cmd` 一键还原（会把官方图标也还原）。启动时可能闪过一个最小化的窗口，那是注入器。
 
 ## 设置
 
@@ -91,14 +95,19 @@ main inspector closed
 
 | 现象 | 原因 |
 |---|---|
-| 日志没有新增 | 没用「WorkBuddy (mods)」启动 |
+| 日志没有新增 | 快捷方式没被接管（装的时候用了 `-KeepOfficialIcon`，或系统重建过图标）→ 重跑一次 `install.cmd` |
 | 有 `spawn app` 没有 `bootstrap ok` | 客户端已经在跑（单实例锁），先完全退出 |
 | 有 `bootstrap ok` 没有 `injected` | 页面 URL 不匹配，客户端改版了 |
+
+> 任务栏固定项如果点了还是原版：右键取消固定，再从开始菜单把 WorkBuddy 固定回去
+> （开始菜单那个已经被接管了）。Windows 有时会缓存旧的固定项。
 
 ## 安全边界
 
 - **不联网**、不读对话内容、不采集数据，只操作模型菜单 DOM
-- **不修改客户端任何文件**：所有东西都在 `%LOCALAPPDATA%\WbMods`，加一个快捷方式
+- **不修改客户端任何文件**：所有东西都在 `%LOCALAPPDATA%\WbMods`
+- 会改写桌面 / 开始菜单 / 任务栏的 `WorkBuddy.lnk`，原文件备份为 `.wbmods.bak`；
+  `uninstall.cmd` 会原样还原
 - 调试端口只在启动后存在约 1 秒，注入完成即关闭
 - **fail-open**：注入失败时客户端照常启动，只是没有滑条
 

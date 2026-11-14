@@ -1,5 +1,14 @@
 # 变更记录
 
+## v3.0.1 — 接管官方快捷方式（2026-11-14）
+
+- 安装器会把桌面 / 开始菜单 / 任务栏固定项里的 `WorkBuddy.lnk` 改成走注入器，
+  名字与图标不变，原文件备份成 `WorkBuddy.lnk.wbmods.bak`。
+  点平时那个图标就能带 mod，不用记新图标。
+- 新增 `-KeepOfficialIcon`：不想被接管时用，退回「只从 WorkBuddy (mods) 启动」。
+- `uninstall.cmd` 在没有其它 mod 时会还原这些快捷方式。
+- 已知：任务栏固定项偶尔被 Windows 缓存，取消固定再从开始菜单固定回来即可。
+
 ## v3.0.0 — 复活（2026-11-14）
 
 5.9.2 起客户端把 renderer 打进 asar 并加了 SHA256 完整性校验，旧的 index.html 加载器方案
