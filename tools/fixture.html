@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>wb-effort-slider fixture</title>
+<style>
+  body { background:#1b1b1f; color:#e6e6e6; font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif; padding:24px; }
+  h2 { font-size:12px; color:#888; letter-spacing:.08em; text-transform:uppercase; margin:0 0 8px; }
+  .cr-model-selector__sub-panel {
+    width:300px; background:#232329; border:1px solid #333; border-radius:10px; padding:8px;
+  }
+  .cr-model-selector__sub-panel-toggle {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:6px 8px; color:#bbb;
+  }
+  .cr-model-selector__sub-panel-toggle button {
+    width:34px; height:18px; border-radius:9px; border:0; background:#4c8bf5; position:relative;
+  }
+  .cr-model-selector__sub-panel-section-label {
+    padding:8px; font-size:11px; color:#777; letter-spacing:.06em;
+  }
+  .cr-model-selector__sub-panel-item {
+    padding:6px 8px; border-radius:6px; cursor:pointer;
+  }
+  .cr-model-selector__sub-panel-item--active { background:#2f3a52; }
+  .cr-model-selector__sub-panel-divider { height:1px; background:#333; margin:6px 0; }
+  #result { margin-top:20px; font-size:12px; color:#7ee787; }
+</style>
+</head>
+<body>
+  <h2>思考强度面板（结构照客户端类名搭的）</h2>
+  <div class="cr-model-selector__sub-panel">
+    <div class="cr-model-selector__sub-panel-toggle">
+      <span>思考模式</span>
+      <button role="switch" aria-checked="true" aria-label="思考模式"></button>
+    </div>
+    <div class="cr-model-selector__sub-panel-section-label">思考强度</div>
+    <div class="cr-model-selector__sub-panel-item">低</div>
+    <div class="cr-model-selector__sub-panel-item">中</div>
+    <div class="cr-model-selector__sub-panel-item cr-model-selector__sub-panel-item--active">高</div>
+    <div class="cr-model-selector__sub-panel-item">超高</div>
+    <div class="cr-model-selector__sub-panel-item">极致</div>
+  </div>
+
+  <div id="result">waiting…</div>
+
+  <script src="../src/wb-effort-slider.js"></script>
+  <script>
+    setTimeout(function () {
+      var sliders = document.querySelectorAll('.wb-es').length;
+      var values = [].map.call(document.querySelectorAll('.wb-es-value'), function (e) { return e.textContent; });
+      var hidden = document.querySelectorAll('.cr-model-selector__sub-panel-item').length;
+      document.getElementById('result').textContent =
+        'sliders=' + sliders + ' value=' + JSON.stringify(values) + ' items=' + hidden;
+      document.title = 'sliders=' + sliders;
+    }, 900);
+  </script>
+</body>
+</html>
