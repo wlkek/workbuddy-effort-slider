@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------
 # 不再改客户端任何文件。做法：
 #   1. 把 loader 与 mod 复制到 %LOCALAPPDATA%\WbMods
-#   2. 生成 launch.vbs（设置 NODE_OPTIONS=--require hook.js 后启动 WorkBuddy.exe）
+#   2. 生成 launch.vbs（Node 模式跑 injector.js，由它带 --inspect 拉起客户端）
 #   3. 在桌面 / 开始菜单建快捷方式指向 launch.vbs
 # 卸载只删自己这一份，不影响其它 mod。
 
@@ -100,7 +100,7 @@ if ($Status) {
   } else { Say '  Mod      : 未安装' }
   Say ('  快捷方式 : ' + $(if (Test-Path (Join-Path ([Environment]::GetFolderPath('Desktop')) $shortcutName)) { '已创建' } else { '缺失' }))
   $fuseStr = Get-FuseString $exe
-  if ($fuseStr) { Say ('  Fuse     : ' + $fuseStr + $(if ($fuseStr.Length -gt 2 -and $fuseStr[2] -eq '1') { '（NODE_OPTIONS 可用）' } else { '（NODE_OPTIONS 已被关闭，注入不可用）' })) }
+  if ($fuseStr) { Say ('  Fuse     : ' + $fuseStr + $(if ($fuseStr.Length -gt 2 -and $fuseStr[3] -eq '1') { '（--inspect 可用）' } else { '（--inspect 已被关闭，注入不可用）' })) }
   $log = Join-Path $dest 'loader.log'
   if (Test-Path $log) {
     Say '  最近日志 :'
@@ -138,8 +138,8 @@ if ($Uninstall) {
 $fuseStr = Get-FuseString $exe
 if ($fuseStr -eq $null) {
   Say '[!] 读不到 Electron fuse，无法确认注入通道是否可用，仍继续安装' 'Yellow'
-} elseif ($fuseStr.Length -le 2 -or $fuseStr[2] -ne '1') {
-  Say '[!] 这个版本的 WorkBuddy 关闭了 NODE_OPTIONS fuse（' + $fuseStr + '），本 mod 无法生效。' 'Yellow'
+} elseif ($fuseStr.Length -le 3 -or $fuseStr[3] -ne '1') {
+  Say '[!] 这个版本的 WorkBuddy 关闭了 --inspect fuse（' + $fuseStr + '），本 mod 无法生效。' 'Yellow'
   Say '    可以继续安装，但客户端启动后不会有任何变化。' 'Yellow'
 } else {
   Say ('[OK] 注入通道可用（fuse ' + $fuseStr + '）') 'Green'
@@ -147,7 +147,7 @@ if ($fuseStr -eq $null) {
 
 $modDir = Join-Path $dest ('mods\' + $ModId)
 New-Item -ItemType Directory -Force -Path $modDir | Out-Null
-Copy-Item (Join-Path $here 'loader\hook.js') (Join-Path $dest 'hook.js') -Force
+Copy-Item (Join-Path $here 'loader\injector.js') (Join-Path $dest 'injector.js') -Force
 Copy-Item (Join-Path $here ('src\wb-' + $ModId + '.js')) (Join-Path $modDir 'mod.js') -Force
 
 $manifest = @{
@@ -158,16 +158,21 @@ $manifest = @{
 } | ConvertTo-Json -Depth 4
 [IO.File]::WriteAllText((Join-Path $modDir 'manifest.json'), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
-# launch.vbs：无窗口，设置环境变量后拉起客户端
-$vbs = @"
-Option Explicit
-Dim sh, hook
-Set sh = CreateObject("WScript.Shell")
-hook = "$(Join-Path $dest 'hook.js')"
-sh.Environment("PROCESS")("NODE_OPTIONS") = "--require """ & hook & """"
-sh.Run """$exe""", 1, False
-"@
-[IO.File]::WriteAllText($launch, $vbs, [Text.Encoding]::Unicode)
+# launch.vbs：无窗口，先用 Node 模式跑 injector，再由它带 --inspect 拉起客户端
+$injector = Join-Path $dest 'injector.js'
+$tpl = Get-Content (Join-Path $here 'loader\launch.vbs.template') -Raw
+$tpl = $tpl -replace "`r?`n", "`r`n"
+$tpl = $tpl.Replace('{{LOG}}', (Join-Path $dest 'launch.log')).Replace('{{EXE}}', $exe).Replace('{{INJECTOR}}', $injector)
+[IO.File]::WriteAllText($launch, $tpl, [Text.Encoding]::Unicode)
+
+# 注入器需要的客户端路径写进 config.json（不依赖环境变量）
+@{ app = $exe } | ConvertTo-Json -Compress | ForEach-Object {
+  [IO.File]::WriteAllText((Join-Path $dest 'config.json'), $_, (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# 首选客户端自带的 node.exe 直接跑注入器，绕开脚本宿主
+$nodeExe = @(Get-ChildItem (Join-Path $env:USERPROFILE '.workbuddy\binaries\node\versions\*\node.exe') -ErrorAction SilentlyContinue) |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 # 快捷方式
 $wsh = New-Object -ComObject WScript.Shell
@@ -179,8 +184,14 @@ foreach ($dir in $targets) {
   if (-not (Test-Path $dir)) { continue }
   $lnkPath = Join-Path $dir $shortcutName
   $sc = $wsh.CreateShortcut($lnkPath)
-  $sc.TargetPath = (Join-Path $env:SystemRoot 'System32\wscript.exe')
-  $sc.Arguments = '"' + $launch + '"'
+  if ($nodeExe) {
+    $sc.TargetPath = $nodeExe.FullName
+    $sc.Arguments = '"' + $injector + '"'
+    $sc.WindowStyle = 7
+  } else {
+    $sc.TargetPath = (Join-Path $env:SystemRoot 'System32\wscript.exe')
+    $sc.Arguments = '"' + $launch + '"'
+  }
   $sc.WorkingDirectory = $AppRoot
   $sc.IconLocation = $exe + ',0'
   $sc.Description = 'WorkBuddy（已加载 mod）'

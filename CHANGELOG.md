@@ -3,19 +3,21 @@
 ## v3.0.0 — 复活（2026-11-14）
 
 5.9.2 起客户端把 renderer 打进 asar 并加了 SHA256 完整性校验，旧的 index.html 加载器方案
-没有落点。这一版换成运行时注入，**不再改客户端任何文件**。
+没有落点。这一版换成运行时注入，**不改客户端任何文件**。
 
-- **新通道**：`NODE_OPTIONS=--require hook.js`（Electron 的 `EnableNodeOptionsEnvironmentVariable` fuse，
-  5.9.3 实测为开）→ main 进程监听 `web-contents-created` → 主界面 `dom-ready` 后
-  `executeJavaScript(mod.js)`。
-- **hook 的三条约束**：只认 `process.type === 'browser'`；启动后立刻把 `--require` 从
-  `NODE_OPTIONS` 摘掉，避免被 agent 的 node 子进程继承；只注入
-  `app.asar/renderer/index.html`，guest 页面跳过。
-- **安装器重写**：不再碰安装目录，改为复制到 `%LOCALAPPDATA%\WbMods`、生成 `launch.vbs`、
-  建桌面/开始菜单快捷方式；安装前读 exe 的 fuse 串，通道不可用时明确提示。
-- **滑条逻辑没改**，面板识别仍然用结构锚点（思考模式开关 / 档位文案），语言无关。
-  5.9.2 新增的「自定义模型」入口是否带独立的档位面板，需要真机确认。
-- **已知代价**：必须用新快捷方式启动；`NODE_OPTIONS` 注入可能被杀软拦。
+- **通道**：快捷方式 → 客户端自带的 `node.exe` 跑 `injector.js` → 带 `--inspect=<随机端口>`
+  启动客户端 → 连上主进程 inspector → `Runtime.evaluate` 注入 bootstrap →
+  挂 `web-contents-created`，主界面 `dom-ready` 后 `executeJavaScript(mod.js)`。
+  注入完成 1.2 秒后从主进程 `inspector.close()`，不留下调试端口。
+- **试错记录**：先试过 `NODE_OPTIONS=--require`。fuse 是开着的，但 Electron 对打包应用
+  只放行 NODE_OPTIONS 的一个白名单（内存/证书/警告类），`--require` 被过滤——
+  二进制里那句 "Most NODE_OPTIONs are not supported in packaged apps" 就是这道闸。
+  之后还踩过 `.vbs` 用 LF 换行、脚本宿主整行解析失败；最后干脆绕开脚本宿主，
+  让快捷方式直接指向 node.exe。
+- **安装器**：不碰安装目录，写 `%LOCALAPPDATA%\WbMods` + `config.json`，建快捷方式；
+  安装前读 exe 的 Electron fuse，确认 `NodeCliInspect` 可用。
+- **mod 脚本没改**，只补了注入时机的兼容（脚本自带 readyState 判断，晚注入也能启动）。
+- **已知代价**：必须用「WorkBuddy (mods)」启动；启动时可能闪过一个最小化窗口。
 
 ## v2.8.0
 - **下线「快速」手感**。它是步进式的（旋钮只停档位格），慢拖时"先停住再整段跳"，
