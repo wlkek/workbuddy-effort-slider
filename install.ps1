@@ -241,12 +241,20 @@ if (-not $AppRoot) {
   Say '[X] 找不到 WorkBuddy 安装目录。' 'Red'
   Say '    已尝试：上次安装记录、运行中的进程、注册表、快捷方式、默认路径。' 'DarkGray'
   Say '    请手动指定，例如：' 'Yellow'
-  Say '      install.cmd -AppRoot "D:\应用\wookbuddy\WorkBuddy"' 'Yellow'
+  Say '      install.cmd -AppRoot "D:\你的路径\WorkBuddy"' 'Yellow'
   exit 1
 }
-$exe = Join-Path $AppRoot 'WorkBuddy.exe'
-if (-not (Test-Path $exe)) {
+# 用 [IO.Path]::Combine 而不是 Join-Path：后者在盘符不存在时会抛异常，
+# 而用户手打路径（照着文档抄、盘符不对）是最常见的出错方式，应该给提示而不是堆栈
+$exe = [IO.Path]::Combine($AppRoot, 'WorkBuddy.exe')
+if (-not (Test-Path -LiteralPath $AppRoot)) {
+  Say "[X] 指定的目录不存在：$AppRoot" 'Red'
+  Say '    检查盘符和路径是否正确；路径含空格时要用引号包起来' 'DarkGray'
+  exit 1
+}
+if (-not (Test-Path -LiteralPath $exe)) {
   Say "[X] 目录里没有 WorkBuddy.exe：$AppRoot" 'Red'
+  Say '    请指向 WorkBuddy 安装目录（和 resources 文件夹同一层）' 'DarkGray'
   exit 1
 }
 
