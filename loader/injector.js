@@ -154,11 +154,13 @@ function buildBootstrap(modsRoot, logPath) {
       } catch (e) { log('server load fail ' + m.id + ': ' + e.message); }
     });
 
-    /* 主界面入口：5.9.2+ 在 app.asar 里，5.8.x 是解包目录，都按路径结尾判断 */
+    /* 主界面入口：5.9.2+ 在 app.asar 里，5.8.x 是解包目录，都按路径结尾判断。
+     * 这里必须用字符串比较：正则里的 \/ 会被模板字符串吃成 /，整行变成注释。 */
+    var TAIL = '/renderer/index.html';
     function isTarget(u) {
       if (typeof u !== 'string') return false;
-      var s = u.split('#')[0].split('?')[0];
-      return /\/renderer\/index\.html$/i.test(s);
+      var s = u.split('#')[0].split('?')[0].toLowerCase();
+      return s.length > TAIL.length && s.slice(-TAIL.length) === TAIL;
     }
 
     function reply(wc, rid, payload) {
@@ -208,9 +210,17 @@ function buildBootstrap(modsRoot, logPath) {
     function inject(wc) {
       var url = '';
       try { url = wc.getURL() || ''; } catch (e) { return; }
-      if (!isTarget(url)) return;
+      if (!isTarget(url)) {
+        /* 只记本地页面，免得 devtools 之类刷屏；同一个 URL 只记一次 */
+        if (url.indexOf('file:') === 0 && wc.__wbSkipUrl !== url) {
+          wc.__wbSkipUrl = url;
+          log('skip wc ' + url.slice(0, 90));
+        }
+        return;
+      }
       if (wc.__wbInjected) return;
       wc.__wbInjected = true;
+      log('target wc ' + url.slice(0, 90));
 
       mods.forEach(function (m) {
         wc.executeJavaScript(m.src, true)
@@ -220,13 +230,35 @@ function buildBootstrap(modsRoot, logPath) {
       arm(wc);
     }
 
-    electron.app.on('web-contents-created', function (_e, wc) {
+    /* 每个 webContents 只挂一次；窗口可能在 bootstrap 之前就建好，
+     * 那 dom-ready 已经错过，所以下面还会做一轮兜底扫描。 */
+    function hook(wc) {
+      if (!wc || wc.__wbHooked) return;
+      wc.__wbHooked = true;
       try {
         wc.on('did-start-loading', function () { wc.__wbInjected = false; });
         wc.on('dom-ready', function () { inject(wc); });
+        wc.on('did-finish-load', function () { inject(wc); });
+      } catch (e) { log('hook fail: ' + ((e && e.message) || e)); }
+    }
+
+    electron.app.on('web-contents-created', function (_e, wc) { hook(wc); });
+    try {
+      electron.webContents.getAllWebContents().forEach(function (wc) {
+        hook(wc);
+        inject(wc);
+      });
+    } catch (e) {}
+
+    var wbScan = setInterval(function () {
+      try {
+        electron.webContents.getAllWebContents().forEach(function (wc) {
+          hook(wc);
+          inject(wc);
+        });
       } catch (e) {}
-    });
-    try { electron.webContents.getAllWebContents().forEach(inject); } catch (e) {}
+    }, 800);
+    setTimeout(function () { clearInterval(wbScan); }, 60000);
 
     log('bootstrap ok, mods=' + mods.length + ', servers=' + Object.keys(handlers).length);
 
@@ -290,19 +322,52 @@ function evaluateOnce(ws, expr, timeoutMs) {
 /* 客户端刚 spawn 时 inspector 端口就开了，但 Electron 还没初始化完，
  * 这时求值拿不到 require。等它准备好，比盲目重试省时间也好排查。 */
 async function waitForMainReady(ws) {
-  const deadline = Date.now() + 30000;
+  /* 客户端更新后的第一次启动会做迁移和扩展加载，主进程可能几十秒不响应求值。
+   * 这里给 90 秒，并且每次都记结果，失败时能看出卡在哪一步。 */
+  const deadline = Date.now() + 90000;
   let last = '';
   let n = 0;
   while (Date.now() < deadline) {
-    const r = await evaluateOnce(ws, 'typeof require', 3000);
+    const r = await evaluateOnce(ws, 'typeof require', 4000);
     const v = r && r.result && r.result.value;
-    if (v === 'function') return true;
+    if (v === 'function') {
+      log('main ready, attempts=' + n);
+      return true;
+    }
     last = r && r.timeout ? 'timeout' : (r && r.closed ? 'closed' : 'value=' + String(v));
-    if (++n % 10 === 0) log('wait main, #' + n + ' ' + last);
-    await new Promise((res) => setTimeout(res, 300));
+    n += 1;
+    log('wait main #' + n + ' => ' + last);
+    await new Promise((res) => setTimeout(res, 400));
   }
-  log('main not ready: ' + last);
+  log('main not ready after ' + n + ' attempts: ' + last);
   return false;
+}
+
+/* 注入器互斥：用户连点两下图标时，第二个实例会再 spawn 一次客户端，
+ * 单实例锁会让它立刻退出，但那一轮注入就白等了。 */
+const LOCK = path.join(path.dirname(LOG), 'injector.lock');
+
+function acquireLock() {
+  try {
+    const parts = fs.readFileSync(LOCK, 'utf8').split(',');
+    const age = Date.now() - Number(parts[1] || 0);
+    if (age >= 0 && age < 120000) {
+      log('another injector is running (' + Math.round(age / 1000) + 's), skip');
+      return false;
+    }
+  } catch (e) { /* 没有锁文件 */ }
+  try {
+    fs.mkdirSync(path.dirname(LOCK), { recursive: true });
+    fs.writeFileSync(LOCK, process.pid + ',' + Date.now());
+  } catch (e) { /* ignore */ }
+  return true;
+}
+
+function releaseLock() {
+  try {
+    const parts = fs.readFileSync(LOCK, 'utf8').split(',');
+    if (String(parts[0]) === String(process.pid)) fs.unlinkSync(LOCK);
+  } catch (e) { /* ignore */ }
 }
 
 async function main() {
@@ -328,6 +393,9 @@ async function main() {
     log('dry-run app=' + APP + ' mods=[' + modIds.join(',') + ']');
     return;
   }
+
+  if (!acquireLock()) return;
+  process.on('exit', releaseLock);
 
   const port = await freePort();
   const env = Object.assign({}, process.env);
@@ -373,6 +441,7 @@ async function main() {
     if (outcome.indexOf('OK') === 0) break;
   }
   try { ws.close(); } catch (e) { /* ignore */ }
+  releaseLock();
 }
 
 /* 直接运行（快捷方式走的路径）才启动；被 require 时只导出 buildBootstrap，方便单测 */
