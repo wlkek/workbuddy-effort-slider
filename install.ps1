@@ -324,6 +324,21 @@ if ($Uninstall) {
     }
     if ($restored -eq 0) { Say '[--] 没有需要还原的快捷方式' 'DarkGray' }
 
+    # 开机自启还原成原版 exe
+    $autostartFile = Join-Path $dest 'autostart.json'
+    if (Test-Path $autostartFile) {
+      try {
+        $backups = @(Get-Content $autostartFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        foreach ($b in $backups) {
+          if (-not $b.name) { continue }
+          Set-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name $b.name -Value $b.value
+          Say "[OK] 已还原开机自启：$($b.name)" 'Green'
+        }
+      } catch {
+        Say "[!] 还原开机自启失败：$($_.Exception.Message)" 'Yellow'
+      }
+    }
+
     foreach ($p in @([Environment]::GetFolderPath('Desktop'),
                      (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))) {
       $lnk = Join-Path $p $shortcutName
@@ -467,6 +482,55 @@ if ($nodeRunner -and -not $KeepOfficialIcon) {
   Say '[--] 按 -KeepOfficialIcon 要求，保留官方图标' 'DarkGray'
 } elseif (-not $nodeRunner) {
   Say '[--] 没有 node 入口，不改官方图标（回退模式只提供「WorkBuddy (mods)」）' 'DarkGray'
+}
+
+# 开机自启：客户端的 Run 项直接指向原版 exe，重启电脑时会先以原版起来，
+# 之后点快捷方式被单实例锁吞掉，整个会话都没有 mod。
+# 把这一项也改成走注入器，原值记在 autostart.json 里供卸载还原。
+$autostartFile = Join-Path $dest 'autostart.json'
+if ($nodeRunner) {
+  try {
+    $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+    $props = Get-ItemProperty $runKey -ErrorAction SilentlyContinue
+    $backups = @()
+    if (Test-Path $autostartFile) {
+      try { $backups = @(Get-Content $autostartFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { }
+    }
+    $runLauncher = '"' + $nodeRunner + '" "' + $injector + '"'
+    $hit = 0
+    if ($props) {
+      $props.PSObject.Properties |
+        Where-Object { $_.Name -notlike 'PS*' -and "$($_.Value)" -like '*WorkBuddy.exe*' } |
+        ForEach-Object {
+          $name = $_.Name
+          $orig = "$($_.Value)"
+          if (-not @($backups | Where-Object { $_.name -eq $name }).Count) {
+            $backups += [pscustomobject]@{ name = $name; value = $orig }
+          }
+          Set-ItemProperty -Path $runKey -Name $name -Value $runLauncher
+          $hit++
+          Say "[OK] 已接管开机自启：$name" 'Green'
+        }
+    }
+    if ($hit -eq 0) {
+      $already = $false
+      if ($props) {
+        $props.PSObject.Properties |
+          Where-Object { $_.Name -notlike 'PS*' -and "$($_.Value)" -eq $runLauncher } |
+          ForEach-Object { $already = $true }
+      }
+      if ($already) {
+        Say '[OK] 开机自启已指向注入器' 'Green'
+      } else {
+        Say '[--] 没有找到开机自启项（客户端没设自启，或者已经被改过）' 'DarkGray'
+      }
+    }
+    if ($backups.Count) {
+      [IO.File]::WriteAllText($autostartFile, ($backups | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+    }
+  } catch {
+    Say "[!] 开机自启接管失败：$($_.Exception.Message)" 'Yellow'
+  }
 }
 
 Say ''
