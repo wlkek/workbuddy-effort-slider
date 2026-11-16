@@ -2,7 +2,8 @@
   [string]$AppRoot,
   [switch]$Uninstall,
   [switch]$Status,
-  [switch]$KeepOfficialIcon
+  [switch]$KeepOfficialIcon,
+  [switch]$AutoStart
 )
 
 # WorkBuddy 思考强度滑条 —— 安装 / 卸载（5.9.2+ 新版通道）
@@ -484,28 +485,34 @@ if ($nodeRunner -and -not $KeepOfficialIcon) {
   Say '[--] 没有 node 入口，不改官方图标（回退模式只提供「WorkBuddy (mods)」）' 'DarkGray'
 }
 
-# 开机自启：客户端的 Run 项直接指向原版 exe，重启电脑时会先以原版起来，
-# 之后点快捷方式被单实例锁吞掉，整个会话都没有 mod。
-# 把这一项也改成走注入器，原值记在 autostart.json 里供卸载还原。
+# 开机自启：默认不改动。
+#
+# 早先这里会把客户端的 Run 项改成注入器，理由是想让「开机那一次也带 mod」。
+# 但客户端自己关掉自启时不会认得这个值，于是变成了我们替它开了自启——
+# 用户没有开自启，开机还是会被拉起来。
+#
+# 现在的规则：
+#   - 默认：只清理指向注入器的项，不新建、不改客户端自己的自启项
+#   - 想让开机那一次也带 mod，显式加 -AutoStart，才会接管官方项并备份原值
 $autostartFile = Join-Path $dest 'autostart.json'
-if ($nodeRunner) {
+$runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+$runLauncher = if ($nodeRunner) { '"' + $nodeRunner + '" "' + $injector + '"' } else { '' }
+
+if ($AutoStart -and $nodeRunner) {
   try {
-    $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
     $props = Get-ItemProperty $runKey -ErrorAction SilentlyContinue
     $backups = @()
     if (Test-Path $autostartFile) {
       try { $backups = @(Get-Content $autostartFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { }
     }
-    $runLauncher = '"' + $nodeRunner + '" "' + $injector + '"'
     $hit = 0
     if ($props) {
       $props.PSObject.Properties |
         Where-Object { $_.Name -notlike 'PS*' -and "$($_.Value)" -like '*WorkBuddy.exe*' } |
         ForEach-Object {
           $name = $_.Name
-          $orig = "$($_.Value)"
           if (-not @($backups | Where-Object { $_.name -eq $name }).Count) {
-            $backups += [pscustomobject]@{ name = $name; value = $orig }
+            $backups += [pscustomobject]@{ name = $name; value = "$($_.Value)" }
           }
           Set-ItemProperty -Path $runKey -Name $name -Value $runLauncher
           $hit++
@@ -513,17 +520,7 @@ if ($nodeRunner) {
         }
     }
     if ($hit -eq 0) {
-      $already = $false
-      if ($props) {
-        $props.PSObject.Properties |
-          Where-Object { $_.Name -notlike 'PS*' -and "$($_.Value)" -eq $runLauncher } |
-          ForEach-Object { $already = $true }
-      }
-      if ($already) {
-        Say '[OK] 开机自启已指向注入器' 'Green'
-      } else {
-        Say '[--] 没有找到开机自启项（客户端没设自启，或者已经被改过）' 'DarkGray'
-      }
+      Say '[--] 没有找到客户端自己的自启项' 'DarkGray'
     }
     if ($backups.Count) {
       [IO.File]::WriteAllText($autostartFile, ($backups | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
@@ -531,7 +528,28 @@ if ($nodeRunner) {
   } catch {
     Say "[!] 开机自启接管失败：$($_.Exception.Message)" 'Yellow'
   }
+} else {
+  try {
+    $props = Get-ItemProperty $runKey -ErrorAction SilentlyContinue
+    $removed = 0
+    if ($props -and $runLauncher) {
+      $props.PSObject.Properties |
+        Where-Object { $_.Name -notlike 'PS*' -and "$($_.Value)" -eq $runLauncher } |
+        ForEach-Object {
+          Remove-ItemProperty -Path $runKey -Name $_.Name -ErrorAction SilentlyContinue
+          $removed++
+          Say "[OK] 已移除开机自启：$($_.Name)" 'Green'
+        }
+    }
+    if (Test-Path $autostartFile) { Remove-Item $autostartFile -Force }
+    if ($removed -eq 0) {
+      Say '[OK] 开机自启保持原样（不新建）' 'DarkGray'
+    }
+  } catch {
+    Say "[!] 清理开机自启失败：$($_.Exception.Message)" 'Yellow'
+  }
 }
+
 
 Say ''
 Say '[OK] 安装完成' 'Green'
