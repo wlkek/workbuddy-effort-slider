@@ -16,7 +16,7 @@
  */
 'use strict';
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -351,7 +351,7 @@ function acquireLock() {
   try {
     const parts = fs.readFileSync(LOCK, 'utf8').split(',');
     const age = Date.now() - Number(parts[1] || 0);
-    if (age >= 0 && age < 120000) {
+    if (age >= 0 && age < 45000) {
       log('another injector is running (' + Math.round(age / 1000) + 's), skip');
       return false;
     }
@@ -368,6 +368,21 @@ function releaseLock() {
     const parts = fs.readFileSync(LOCK, 'utf8').split(',');
     if (String(parts[0]) === String(process.pid)) fs.unlinkSync(LOCK);
   } catch (e) { /* ignore */ }
+}
+
+/* 客户端是不是已经在跑。任务管理器里只看得到镜像名，够用了：
+ * 有任何一个 WorkBuddy.exe 就当作在运行，让它自己处理单实例。 */
+function appRunning() {
+  try {
+    const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq WorkBuddy.exe', '/FO', 'CSV', '/NH'], {
+      encoding: 'buffer',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return out.toString('latin1').indexOf('WorkBuddy.exe') >= 0;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function main() {
@@ -391,6 +406,18 @@ async function main() {
       });
     } catch (e) { /* ignore */ }
     log('dry-run app=' + APP + ' mods=[' + modIds.join(',') + ']');
+    return;
+  }
+
+  /* 已经在跑的时候不要再 spawn 一个带 --inspect 的实例去撞单实例锁：
+   * 那个进程会卡在启动画面，这边要空等 90 秒。正常启动一次让客户端自己
+   * 把已有窗口带到前台，然后立刻退出。 */
+  if (appRunning()) {
+    log('app already running, open it without injector');
+    try {
+      const c = spawn(APP, [], { cwd: path.dirname(APP), detached: true, stdio: 'ignore' });
+      c.unref();
+    } catch (e) { log('focus spawn failed: ' + ((e && e.message) || e)); }
     return;
   }
 

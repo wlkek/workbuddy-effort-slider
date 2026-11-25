@@ -1,8 +1,8 @@
 ﻿Option Explicit
 ' WorkBuddy mod launcher
-' 1) 记录一次启动痕迹（排查用）
-' 2) 如果客户端还在跑，提示先完全退出（否则单实例锁会吞掉新实例）
-' 3) 用 Node 模式跑 injector，由它带 --inspect 拉起客户端
+'   客户端已经在跑 → 把已有窗口带到前台，立即退出，不重复起实例
+'   没在跑         → 隐藏运行注入器，由它带 --inspect 启动客户端
+
 Dim sh, fso, svc, procs, p, cl, running
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -17,19 +17,25 @@ End Sub
 
 Note "launch start"
 
-Set svc = GetObject("winmgmts:\\.\root\cimv2")
-Set procs = svc.ExecQuery("select ProcessId, CommandLine from Win32_Process where Name='WorkBuddy.exe'")
 running = False
+On Error Resume Next
+Set svc = GetObject("winmgmts:\\.\root\cimv2")
+Set procs = svc.ExecQuery("select CommandLine from Win32_Process where Name='WorkBuddy.exe'")
 For Each p In procs
   cl = p.CommandLine & ""
   If InStr(cl, "--type=") = 0 And InStr(cl, "daemon-app-server") = 0 And InStr(cl, "cli\bin") = 0 And InStr(cl, "injector.js") = 0 Then
     running = True
   End If
 Next
+On Error GoTo 0
 
 If running Then
-  Note "already running, abort"
-  MsgBox "WorkBuddy 还在运行。" & vbCrLf & vbCrLf & "请先从托盘点右键完全退出，再用这个快捷方式启动。", 48, "WorkBuddy mods"
+  Note "already running, focus"
+  ' 先激活已有窗口；如果它在托盘里没有可见窗口，就正常启动一次，
+  ' 交给客户端的单实例逻辑把窗口调出来
+  If Not sh.AppActivate("WorkBuddy") Then
+    sh.Run """{{EXE}}""", 1, False
+  End If
   WScript.Quit
 End If
 

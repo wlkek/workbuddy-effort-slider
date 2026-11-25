@@ -21,7 +21,7 @@ v3起改用运行时注入，不再修改客户端的任何文件。
 原因是5.9.0开始，客户端把 renderer 打包进 `app.asar` 并加了 SHA256完整性校验，
 原先「往 `app.asar.unpacked/renderer/index.html` 插入加载器」的做法已经没有入口。
 
-现在的流程是：快捷方式调用客户端自带的 `node.exe` 运行注入器，
+现在的流程是：快捷方式调用 `launch.vbs`，由它隐藏运行注入器；
 注入器带 `--inspect` 启动客户端，连上主进程后把 mod 脚本注入页面，随后关闭调试端口。
 
 已在 Windows 版 WorkBuddy 5.9.3 与 5.11.3 上验证。
@@ -59,7 +59,8 @@ v3起改用运行时注入，不再修改客户端的任何文件。
 如果不想让官方图标被接管，使用 `install.cmd -KeepOfficialIcon`，
 此时只能通过新创建的「WorkBuddy (mods)」快捷方式启动。
 
-启动时可能出现一个最小化窗口，那是注入器，注入完成后会自动退出。
+启动过程是隐藏的，不会弹控制台窗口。如果客户端已经在跑，点快捷方式只会把窗口带到前台，
+不会重复启动。
 
 开机自启不会被创建或修改。旧版本接管过自启项的，重新跑一次 `install.cmd` 会清掉；
 需要开机也带 mod 时用 `install.cmd -AutoStart`。
@@ -85,8 +86,8 @@ v3起改用运行时注入，不再修改客户端的任何文件。
 
 ### 客户端升级或被移动之后
 
-- 快捷方式指向 `%LOCALAPPDATA%\WbMods\node.exe`，这是客户端自带 node 的硬链接，
-  不额外占用空间。客户端升级后即使换掉了 `versions\<版本号>\` 目录，图标也不会失效。
+- 快捷方式指向 `%LOCALAPPDATA%\WbMods\launch.vbs`，由它判断客户端在不在跑：
+  在跑就只把窗口带到前台，没跑才隐藏启动注入器。不会「点了没反应」，也不会重复启动撞单实例锁。
 - `config.json` 里保存了安装时探测到的全部候选路径，
   注入器在主路径失效时会按候选逐个尝试。
 
@@ -110,7 +111,7 @@ v3起改用运行时注入，不再修改客户端的任何文件。
 ## 工作原理
 
 ```
-快捷方式 → node.exe injector.js
+快捷方式 → launch.vbs → 注入器（隐藏运行）
              ├─ 带 --inspect=<随机端口> 启动 WorkBuddy
              ├─ 连上主进程 inspector，注入一段 bootstrap
              ├─ bootstrap 挂 web-contents-created，页面 dom-ready 后执行 mod

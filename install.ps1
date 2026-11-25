@@ -428,6 +428,9 @@ $cfgObj = @{ app = $exe; candidates = $candExes }
 [IO.File]::WriteAllText($cfgFile, ($cfgObj | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
 
 # 快捷方式
+# 优先落到 vbs 上：它自己判断客户端在不在跑，不会弹控制台窗口
+$wshExe = Join-Path $env:SystemRoot 'System32\wscript.exe'
+$useVbs = (Test-Path $launch) -and (Test-Path $wshExe)
 $wsh = New-Object -ComObject WScript.Shell
 $targets = @(
   [Environment]::GetFolderPath('Desktop'),
@@ -438,26 +441,30 @@ foreach ($dir in $targets) {
   $lnkPath = Join-Path $dir $shortcutName
   try {
     $sc = $wsh.CreateShortcut($lnkPath)
-    if ($nodeRunner) {
+    if ($useVbs) {
+      $sc.TargetPath = $wshExe
+      $sc.Arguments = '"' + $launch + '"'
+      $sc.WindowStyle = 1
+    } elseif ($nodeRunner) {
       $sc.TargetPath = $nodeRunner
       $sc.Arguments = '"' + $injector + '"'
       $sc.WindowStyle = 7
     } else {
-      $sc.TargetPath = (Join-Path $env:SystemRoot 'System32\wscript.exe')
-      $sc.Arguments = '"' + $launch + '"'
+      $sc.TargetPath = $exe
+      $sc.Arguments = ''
     }
     $sc.WorkingDirectory = $AppRoot
     $sc.IconLocation = $exe + ',0'
     $sc.Description = 'WorkBuddy（已加载 mod）'
     $sc.Save()
-    Say ("[OK] 快捷方式：$lnkPath  (" + $(if ($nodeRunner) { 'node 直启' } else { 'vbs 回退' }) + ")") 'Green'
+    Say ("[OK] 快捷方式：$lnkPath  (" + $(if ($useVbs) { 'vbs 隐藏启动' } else { 'node 直启' }) + ")") 'Green'
   } catch {
     Say "[!] 建快捷方式失败：$lnkPath" 'Yellow'
   }
 }
 
 # 接管官方快捷方式：点原来那个图标也走注入器（原文件备份为 .wbmods.bak）
-if ($nodeRunner -and -not $KeepOfficialIcon) {
+if (($useVbs -or $nodeRunner) -and -not $KeepOfficialIcon) {
   $targetsFound = @(Get-OfficialLnks)
   if (-not $targetsFound.Count) {
     Say '[--] 没找到指向客户端的官方快捷方式，只保留了「WorkBuddy (mods)」' 'DarkGray'
@@ -467,11 +474,16 @@ if ($nodeRunner -and -not $KeepOfficialIcon) {
       $bak = $lnk + '.wbmods.bak'
       if (-not (Test-Path $bak)) { Copy-Item $lnk $bak -Force }
       $sc = $wsh.CreateShortcut($lnk)
-      $sc.TargetPath = $nodeRunner
-      $sc.Arguments = '"' + $injector + '"'
+      if ($useVbs) {
+        $sc.TargetPath = $wshExe
+        $sc.Arguments = '"' + $launch + '"'
+      } else {
+        $sc.TargetPath = $nodeRunner
+        $sc.Arguments = '"' + $injector + '"'
+      }
       $sc.WorkingDirectory = $AppRoot
       $sc.IconLocation = $exe + ',0'
-      $sc.WindowStyle = 7
+      $sc.WindowStyle = 1
       $sc.Save()
       Say "[OK] 已接管官方图标：$lnk" 'Green'
     } catch {
@@ -481,7 +493,7 @@ if ($nodeRunner -and -not $KeepOfficialIcon) {
   }
 } elseif ($KeepOfficialIcon) {
   Say '[--] 按 -KeepOfficialIcon 要求，保留官方图标' 'DarkGray'
-} elseif (-not $nodeRunner) {
+} elseif (-not ($useVbs -or $nodeRunner)) {
   Say '[--] 没有 node 入口，不改官方图标（回退模式只提供「WorkBuddy (mods)」）' 'DarkGray'
 }
 
