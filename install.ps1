@@ -377,12 +377,9 @@ $manifest = @{
 } | ConvertTo-Json -Depth 4
 [IO.File]::WriteAllText((Join-Path $modDir 'manifest.json'), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
-# launch.vbs：无窗口，先用 Node 模式跑 injector，再由它带 --inspect 拉起客户端
+# launch.vbs：快捷方式指向它，由脚本宿主隐藏运行注入器，不弹控制台。
+# node 入口要到下面才确定，所以生成放在后面。
 $injector = Join-Path $dest 'injector.js'
-$tpl = Get-Content (Join-Path $here 'loader\launch.vbs.template') -Raw -Encoding UTF8
-$tpl = $tpl -replace "`r?`n", "`r`n"
-$tpl = $tpl.Replace('{{LOG}}', (Join-Path $dest 'launch.log')).Replace('{{EXE}}', $exe).Replace('{{INJECTOR}}', $injector)
-[IO.File]::WriteAllText($launch, $tpl, [Text.Encoding]::Unicode)
 
 # 稳定入口：把客户端自带的 node.exe 硬链成 WbMods\node.exe
 # 因为 versions\<版本号>\ 目录会在升级时被换掉，快捷方式不能直接指过去
@@ -426,6 +423,22 @@ foreach ($c in $script:appCands) {
 }
 $cfgObj = @{ app = $exe; candidates = $candExes }
 [IO.File]::WriteAllText($cfgFile, ($cfgObj | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+
+
+# 生成 launch.vbs。{{NODE}} 为空时，脚本自己会用客户端 exe 加 ELECTRON_RUN_AS_NODE 兜底
+Remove-Item $launch -Force -ErrorAction SilentlyContinue
+try {
+  $tpl = Get-Content (Join-Path $here 'loader\launch.vbs.template') -Raw -Encoding UTF8
+  $tpl = $tpl -replace "`r?`n", "`r`n"
+  $tpl = $tpl.Replace('{{LOG}}', (Join-Path $dest 'launch.log'))
+  $tpl = $tpl.Replace('{{EXE}}', $exe)
+  $tpl = $tpl.Replace('{{INJECTOR}}', $injector)
+  $tpl = $tpl.Replace('{{NODE}}', $(if ($nodeRunner) { $nodeRunner } else { '' }))
+  [IO.File]::WriteAllText($launch, $tpl, [Text.Encoding]::Unicode)
+  Say '[OK] 启动脚本：launch.vbs（无控制台窗口）' 'Green'
+} catch {
+  Say "[!] 生成 launch.vbs 失败：$($_.Exception.Message)" 'Yellow'
+}
 
 # 快捷方式
 # 优先落到 vbs 上：它自己判断客户端在不在跑，不会弹控制台窗口

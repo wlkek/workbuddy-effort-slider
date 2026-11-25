@@ -319,28 +319,75 @@ function evaluateOnce(ws, expr, timeoutMs) {
   });
 }
 
-/* 客户端刚 spawn 时 inspector 端口就开了，但 Electron 还没初始化完，
- * 这时求值拿不到 require。等它准备好，比盲目重试省时间也好排查。 */
-async function waitForMainReady(ws) {
-  /* 客户端更新后的第一次启动会做迁移和扩展加载，主进程可能几十秒不响应求值。
-   * 这里给 90 秒，并且每次都记结果，失败时能看出卡在哪一步。 */
-  const deadline = Date.now() + 90000;
-  let last = '';
+function openWs(target) {
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; resolve(ws); } };
+    if (ws.readyState === 1) return fin();
+    ws.addEventListener('open', fin);
+    ws.addEventListener('error', fin);
+    setTimeout(fin, 3000);
+  });
+}
+
+/* 一次求值的结果说人话，失败时日志能直接看出是超时、异常还是上下文没起来 */
+function describe(r) {
+  if (!r) return 'no-result';
+  if (r.timeout) return 'timeout';
+  if (r.closed) return 'socket-closed';
+  if (r.ioError) return 'io-error';
+  if (r.exceptionDetails) {
+    const d = r.exceptionDetails;
+    return 'exception: ' + String((d.exception && (d.exception.description || d.exception.value)) || d.text || '').slice(0, 120);
+  }
+  const v = r.result && r.result.value;
+  return 'value=' + JSON.stringify(v);
+}
+
+/* 客户端刚 spawn 时 inspector 端口先开，Node 环境还没起来，这段时间求值会超时；
+ * 窗口重建时连接还可能失效。所以每轮都重新取 target，必要时换一条连接。
+ * 返回 { ws, ok }：成功时把连接交回去，让调用方在同一条连接上跑 bootstrap。 */
+async function waitForMainReady(port, budgetMs) {
+  const deadline = Date.now() + (budgetMs || 90000);
+  const expr = 'typeof require === "function" ? "yes" : "no"';
+  let ws = null;
+  let last = 'not-started';
   let n = 0;
+
   while (Date.now() < deadline) {
-    const r = await evaluateOnce(ws, 'typeof require', 4000);
-    const v = r && r.result && r.result.value;
-    if (v === 'function') {
-      log('main ready, attempts=' + n);
-      return true;
+    if (!ws || ws.readyState > 1) {
+      const t = await waitForTarget(port, Date.now() + 3000);
+      if (!t) {
+        last = 'no-target';
+      } else {
+        ws = await openWs(t);
+      }
     }
-    last = r && r.timeout ? 'timeout' : (r && r.closed ? 'closed' : 'value=' + String(v));
+
+    if (!ws || ws.readyState !== 1) {
+      last = 'no-connection';
+    } else {
+      const r = await evaluateOnce(ws, expr, 4000);
+      if (r && r.result && r.result.value === 'yes') {
+        log('main ready, attempts=' + n);
+        return { ws: ws, ok: true, last: 'ready' };
+      }
+      last = describe(r);
+      /* 连接已经不可用，下一轮重新找 target */
+      if (r && (r.closed || r.ioError)) {
+        try { ws.close(); } catch (e) { /* ignore */ }
+        ws = null;
+      }
+    }
+
     n += 1;
     log('wait main #' + n + ' => ' + last);
     await new Promise((res) => setTimeout(res, 400));
   }
+
   log('main not ready after ' + n + ' attempts: ' + last);
-  return false;
+  return { ws: ws, ok: false, last: last };
 }
 
 /* 注入器互斥：用户连点两下图标时，第二个实例会再 spawn 一次客户端，
@@ -350,11 +397,19 @@ const LOCK = path.join(path.dirname(LOG), 'injector.lock');
 function acquireLock() {
   try {
     const parts = fs.readFileSync(LOCK, 'utf8').split(',');
+    const pid = Number(parts[0] || 0);
     const age = Date.now() - Number(parts[1] || 0);
-    if (age >= 0 && age < 45000) {
+    /* 只看时间不够：注入器被杀掉时不会清锁，45 秒内所有点击都被拦。
+     * 先看这个进程还在不在，不在就直接接管。 */
+    let ownerAlive = false;
+    if (pid) {
+      try { process.kill(pid, 0); ownerAlive = true; } catch (e) { ownerAlive = false; }
+    }
+    if (ownerAlive && age >= 0 && age < 45000) {
       log('another injector is running (' + Math.round(age / 1000) + 's), skip');
       return false;
     }
+    if (!ownerAlive) log('stale lock from pid ' + pid + ', taking over');
   } catch (e) { /* 没有锁文件 */ }
   try {
     fs.mkdirSync(path.dirname(LOCK), { recursive: true });
@@ -385,7 +440,61 @@ function appRunning() {
   }
 }
 
+/* 在同一条连接上跑 bootstrap，最多三次；返回最后一次的结果 */
+async function runBootstrap(ws) {
+  let outcome = '';
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise((res) => setTimeout(res, 800));
+    const r = await evaluateOnce(ws, buildBootstrap(ROOT, LOG), 30000);
+    if (r && r.exceptionDetails) {
+      outcome = 'exception ' + describe(r);
+    } else {
+      const v = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+      outcome = v || ('no-result ' + describe(r));
+    }
+    /* 结果里可能带多行堆栈，压成一行，日志才不会断成好几条 */
+    log('bootstrap #' + (i + 1) + ' => ' + outcome.replace(/\s+/g, ' ').slice(0, 300));
+    if (outcome.indexOf('OK') === 0) break;
+  }
+  return outcome;
+}
+
+/* --attach <port>：客户端已经在跑、inspector 端口还开着时，直接注入。
+ * 处理的是「上一次注入没做完、进程带着 --inspect 但界面是原版」这种半死状态：
+ * 不重启客户端就能补上。成功返回 0，失败返回 2。 */
+async function attachAndInject(port) {
+  log('attach mode, port=' + port);
+  /* 端口是「已经在跑」的实例留下来的，正常情况下立刻就能连上。
+   * 连不上就说明这次补不了，别拖着，交给上层决定要不要重启。 */
+  const probe = await getJSON('http://127.0.0.1:' + port + '/json/list');
+  if (!Array.isArray(probe) || !probe.length) {
+    log('attach: nothing listening on ' + port);
+    return 2;
+  }
+  const ready = await waitForMainReady(port, 8000);
+  if (!ready.ok) {
+    log('attach failed: ' + ready.last);
+    try { if (ready.ws) ready.ws.close(); } catch (e) { /* ignore */ }
+    return 2;
+  }
+  const outcome = await runBootstrap(ready.ws);
+  try { ready.ws.close(); } catch (e) { /* ignore */ }
+  return outcome.indexOf('OK') === 0 ? 0 : 2;
+}
+
 async function main() {
+  const attachIdx = process.argv.indexOf('--attach');
+  if (attachIdx > 0) {
+    const port = Number(process.argv[attachIdx + 1] || 0);
+    if (!port) {
+      log('attach without a port');
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = await attachAndInject(port);
+    return;
+  }
+
   if (!APP) {
     log('app exe not found; tried config.app=' + (CFG.app || '-') +
         ' and ' + (Array.isArray(CFG.candidates) ? CFG.candidates.length : 0) + ' candidates');
@@ -441,33 +550,25 @@ async function main() {
   const target = await waitForTarget(port, Date.now() + 15000);
   if (!target) {
     log('inspector not reachable (app already running, or --inspect blocked); mods not injected');
+    log('if the client is running, quit it from the tray and start it again');
+    releaseLock();
     return;
   }
 
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve) => {
-    if (ws.readyState === 1) return resolve();
-    ws.addEventListener('open', () => resolve());
-    ws.addEventListener('error', () => resolve());
-  });
-
-  const ready = await waitForMainReady(ws);
-  if (!ready) {
-    log('main process never became ready; mods not injected');
-    try { ws.close(); } catch (e) { /* ignore */ }
+  const ready = await waitForMainReady(port);
+  if (!ready.ok) {
+    log('main process never became ready; mods not injected (' + ready.last + ')');
+    try { if (ready.ws) ready.ws.close(); } catch (e) { /* ignore */ }
+    releaseLock();
     return;
   }
 
-  let outcome = '';
-  for (let i = 0; i < 3; i++) {
-    if (i) await new Promise((res) => setTimeout(res, 800));
-    const r = await evaluateOnce(ws, buildBootstrap(ROOT, LOG), 30000);
-    const v = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
-    outcome = v || ('no-result ' + JSON.stringify(r).slice(0, 160));
-    log('bootstrap #' + (i + 1) + ' => ' + outcome);
-    if (outcome.indexOf('OK') === 0) break;
+  const outcome = await runBootstrap(ready.ws);
+  try { ready.ws.close(); } catch (e) { /* ignore */ }
+  if (outcome.indexOf('OK') !== 0) {
+    log('injection did not complete; the client is running without mods');
+    log('start it again from the shortcut to retry');
   }
-  try { ws.close(); } catch (e) { /* ignore */ }
   releaseLock();
 }
 

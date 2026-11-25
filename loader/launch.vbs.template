@@ -1,45 +1,113 @@
 ﻿Option Explicit
 ' WorkBuddy mod launcher
-'   客户端已经在跑 → 把已有窗口带到前台，立即退出，不重复起实例
-'   没在跑         → 隐藏运行注入器，由它带 --inspect 启动客户端
+'   没在跑            → 隐藏运行注入器，由它带 --inspect 启动客户端
+'   在跑且有调试端口  → 先尝试补注入（上一次注入可能没做完）
+'   在跑且补不上      → 问一次要不要重启，不重启就只把窗口带到前台
+'
+' 全程由脚本宿主运行，不弹控制台窗口。
 
-Dim sh, fso, svc, procs, p, cl, running
+Dim sh, fso, svc, procs, p, cl, running, port, i, j, rest, rc, ans, logFile
+
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
+logFile = "{{LOG}}"
 
 Sub Note(msg)
   On Error Resume Next
   Dim h
-  Set h = fso.OpenTextFile("{{LOG}}", 8, True)
+  Set h = fso.OpenTextFile(logFile, 8, True)
   h.WriteLine Now & " " & msg
   h.Close
+End Sub
+
+' 用固定 node 入口跑注入器；拿不到 node 时退回客户端 exe 的 Node 模式
+Function RunInjector(extra, waitFlag)
+  Dim launcher
+  sh.Environment("PROCESS")("WB_APP_EXE") = "{{EXE}}"
+  launcher = "{{NODE}}"
+  If launcher = "" Then
+    sh.Environment("PROCESS")("ELECTRON_RUN_AS_NODE") = "1"
+    launcher = "{{EXE}}"
+  End If
+  RunInjector = sh.Run("""" & launcher & """ """ & "{{INJECTOR}}" & """" & extra, 0, waitFlag)
+End Function
+
+Sub FocusApp()
+  On Error Resume Next
+  ' 有可见窗口就激活；只剩托盘图标时正常启动一次，交给客户端单实例逻辑调出窗口
+  If Not sh.AppActivate("WorkBuddy") Then
+    sh.Run """{{EXE}}""", 1, False
+  End If
 End Sub
 
 Note "launch start"
 
 running = False
+port = ""
 On Error Resume Next
 Set svc = GetObject("winmgmts:\\.\root\cimv2")
 Set procs = svc.ExecQuery("select CommandLine from Win32_Process where Name='WorkBuddy.exe'")
 For Each p In procs
   cl = p.CommandLine & ""
-  If InStr(cl, "--type=") = 0 And InStr(cl, "daemon-app-server") = 0 And InStr(cl, "cli\bin") = 0 And InStr(cl, "injector.js") = 0 Then
+  If InStr(cl, "--type=") = 0 And InStr(cl, "daemon-app-server") = 0 And InStr(cl, "cli\bin") = 0 Then
     running = True
+    i = InStr(cl, "--inspect=")
+    If i > 0 Then
+      rest = Mid(cl, i + 10)
+      j = InStr(rest, " ")
+      If j > 0 Then rest = Left(rest, j - 1)
+      j = InStrRev(rest, ":")
+      If j > 0 Then rest = Mid(rest, j + 1)
+      If IsNumeric(rest) Then port = rest
+    End If
   End If
 Next
 On Error GoTo 0
 
 If running Then
-  Note "already running, focus"
-  ' 先激活已有窗口；如果它在托盘里没有可见窗口，就正常启动一次，
-  ' 交给客户端的单实例逻辑把窗口调出来
-  If Not sh.AppActivate("WorkBuddy") Then
-    sh.Run """{{EXE}}""", 1, False
+  If port <> "" Then
+    Note "running with inspect port " & port & ", try attach"
+    rc = RunInjector(" --attach " & port, True)
+    Note "attach rc=" & rc
+    If rc = 0 Then
+      FocusApp
+      WScript.Quit
+    End If
+  Else
+    Note "already running without inspect port"
   End If
-  WScript.Quit
+
+  ans = MsgBox("WorkBuddy 正在运行，但这一轮没有加载 mod。" & vbCrLf & vbCrLf & _
+               "要关闭它并重新启动以加载吗？正在进行中的回复会被中断。", _
+               vbYesNo + vbQuestion, "WorkBuddy mods")
+  If ans <> vbYes Then
+    Note "user keeps the running instance"
+    FocusApp
+    WScript.Quit
+  End If
+
+  Note "restart requested, closing client"
+  sh.Run "taskkill /IM WorkBuddy.exe /F /T", 0, True
+
+  ' 等它退干净再拉新的；没退干净就放弃，免得又撞单实例锁卡在启动画面
+  For i = 1 To 20
+    running = False
+    On Error Resume Next
+    Set procs = svc.ExecQuery("select ProcessId from Win32_Process where Name='WorkBuddy.exe'")
+    For Each p In procs
+      running = True
+    Next
+    On Error GoTo 0
+    If Not running Then Exit For
+    WScript.Sleep 400
+  Next
+
+  If running Then
+    Note "client still running after taskkill, give up"
+    WScript.Quit
+  End If
+  Note "client closed, restart with injector"
 End If
 
-sh.Environment("PROCESS")("ELECTRON_RUN_AS_NODE") = "1"
-sh.Environment("PROCESS")("WB_APP_EXE") = "{{EXE}}"
 Note "spawn injector"
-sh.Run """{{EXE}}"" ""{{INJECTOR}}""", 0, False
+RunInjector "", False
